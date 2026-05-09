@@ -931,7 +931,7 @@ function renderHoy() {
       const txt = card.querySelector('.comentario-inp').value.trim();
       if (!G.regs[dk]) G.regs[dk] = {};
       G.regs[dk][t.id] = { ...(G.regs[dk][t.id] || {}), c: txt };
-      saveAll(); renderHoy();
+      saveAllSync(); renderHoy();
     });
     lista.appendChild(card);
   });
@@ -940,7 +940,7 @@ function renderHoy() {
 function marcar(dk, tid, est) {
   if (!G.regs[dk]) G.regs[dk] = {};
   G.regs[dk][tid] = { ...(G.regs[dk][tid] || {}), e: est };
-  saveAll();
+  saveAllSync();
   renderHoy();
 }
 
@@ -1065,6 +1065,143 @@ function actualizarBtnChecklist(dk, tid, total, btnOk) {
   btnOk.style.background = todos ? '#00B894' : '#6C5CE7';
   btnOk.style.color = '#fff';
 }
+
+
+// ══════════════════════════════════════════════════
+// FIREBASE SYNC — Tiempo Real
+// ══════════════════════════════════════════════════
+const FB_URL = 'https://mirutina-816f8-default-rtdb.firebaseio.com';
+let fbSyncTimer = null;
+let ultimaSync = 0;
+
+function fbPath(path) {
+  return `${FB_URL}/${path}.json`;
+}
+
+async function fbGet(path) {
+  try {
+    const r = await fetch(fbPath(path));
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+async function fbSet(path, data) {
+  try {
+    await fetch(fbPath(path), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+  } catch(e) {}
+}
+
+async function fbUpdate(path, data) {
+  try {
+    await fetch(fbPath(path), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+  } catch(e) {}
+}
+
+// Subir todos los datos a Firebase
+async function syncSubir() {
+  const datos = {
+    tareas: G.tareas,
+    tareasFinde: G.tareasFinde,
+    msgTxt: G.msgTxt || '',
+    msgHora: G.msgHora || '08:00',
+    notifAct: G.notifAct || {},
+    nombreJoven: G.nombreJoven || '',
+    ts: Date.now()
+  };
+  await fbSet('config', datos);
+  mostrarEstadoSync('✅ Sincronizado', '#00B894');
+}
+
+// Subir registros (tareas marcadas)
+async function syncRegs() {
+  await fbSet('registros', G.regs || {});
+}
+
+// Bajar datos de Firebase
+async function syncBajar() {
+  const config = await fbGet('config');
+  const regs   = await fbGet('registros');
+
+  if (config && config.ts && config.ts > ultimaSync) {
+    ultimaSync = config.ts;
+    let cambios = false;
+
+    if (config.tareas && JSON.stringify(config.tareas) !== JSON.stringify(G.tareas)) {
+      G.tareas = config.tareas;
+      cambios = true;
+    }
+    if (config.tareasFinde && JSON.stringify(config.tareasFinde) !== JSON.stringify(G.tareasFinde)) {
+      G.tareasFinde = config.tareasFinde;
+      cambios = true;
+    }
+    if (config.msgTxt !== undefined) G.msgTxt = config.msgTxt;
+    if (config.msgHora !== undefined) G.msgHora = config.msgHora;
+    if (config.notifAct !== undefined) G.notifAct = config.notifAct;
+    if (config.nombreJoven !== undefined) G.nombreJoven = config.nombreJoven;
+
+    if (cambios) {
+      saveAll();
+      renderHoy();
+      if (typeof renderAdmTareas === 'function' && G.adminLogado) renderAdmTareas();
+    }
+    mostrarEstadoSync('✅ Conectado', '#00B894');
+  }
+
+  if (regs && JSON.stringify(regs) !== JSON.stringify(G.regs)) {
+    G.regs = regs;
+    saveAll();
+    renderHoy();
+    mostrarEstadoSync('✅ Actualizado', '#00B894');
+  }
+}
+
+function mostrarEstadoSync(txt, color) {
+  const el = document.getElementById('sync-status');
+  if (el) {
+    el.textContent = txt;
+    el.style.color = color;
+    el.style.background = color + '22';
+  }
+  // También actualizar el punto de estado en el header
+  const dot = document.getElementById('sync-dot');
+  if (dot) {
+    dot.style.background = color;
+    dot.title = txt;
+  }
+}
+
+// Guardar y sincronizar (reemplaza saveAll)
+const _saveAllOriginal = saveAll;
+function saveAllSync() {
+  _saveAllOriginal();
+  // Debounce: esperar 800ms antes de subir
+  if (fbSyncTimer) clearTimeout(fbSyncTimer);
+  fbSyncTimer = setTimeout(async () => {
+    mostrarEstadoSync('⏳ Sincronizando...', '#FDCB6E');
+    await syncSubir();
+    await syncRegs();
+  }, 800);
+}
+
+// Polling: bajar datos cada 10 segundos
+function iniciarPolling() {
+  syncBajar(); // primera vez inmediata
+  setInterval(syncBajar, 10000);
+}
+
+// Iniciar sync al cargar
+window.addEventListener('load', () => {
+  setTimeout(iniciarPolling, 1000);
+});
 
 // ══════════════════════════════════════════════════
 // FOTO
@@ -1358,7 +1495,7 @@ function renderAdmTareas() {
         b.textContent = em;
         b.addEventListener('click', () => {
           const idx = getTareasActuales().findIndex(x => x.id === t.id);
-          if (idx >= 0) { getTareasActuales()[idx].emoji = em; saveAll(); renderAdmTareas(); }
+          if (idx >= 0) { getTareasActuales()[idx].emoji = em; saveAllSync(); renderAdmTareas(); }
         });
         ep.appendChild(b);
       });
@@ -1371,7 +1508,7 @@ function renderAdmTareas() {
         b.style.background = c;
         b.addEventListener('click', () => {
           const idx = getTareasActuales().findIndex(x => x.id === t.id);
-          if (idx >= 0) { getTareasActuales()[idx].color = c; saveAll(); renderAdmTareas(); }
+          if (idx >= 0) { getTareasActuales()[idx].color = c; saveAllSync(); renderAdmTareas(); }
         });
         cp.appendChild(b);
       });
@@ -1386,7 +1523,7 @@ function renderAdmTareas() {
           ts[idx].nombre = nom;
           ts[idx].hora   = hr;
           G.editId = null;
-          saveAll(); renderAdmTareas(); renderHoy();
+          saveAllSync(); renderAdmTareas(); renderHoy();
         }
       });
       row.querySelector('.ei-cancel').addEventListener('click', () => { G.editId = null; renderAdmTareas(); });
@@ -1406,7 +1543,7 @@ function renderAdmTareas() {
       row.querySelector('.ta-del').addEventListener('click', () => {
         setTareasActuales(getTareasActuales().filter(x => x.id !== t.id));
         if (G.editId === t.id) G.editId = null;
-        saveAll(); renderAdmTareas(); renderHoy();
+        saveAllSync(); renderAdmTareas(); renderHoy();
       });
     }
     lista.appendChild(row);
@@ -1441,7 +1578,7 @@ $('btn-add-t').addEventListener('click', () => {
     return;
   }
   getTareasActuales().push({ id: Date.now(), hora: hr, nombre: nom, emoji: G.selEmoji, color: G.selColor });
-  saveAll();
+  saveAllSync();
   $('nt-nom').value = '';
   renderAdmTareas(); renderHoy();
   const btn = $('btn-add-t');
@@ -1549,7 +1686,7 @@ $('btn-prueba').addEventListener('click', () => showLock(true));
 $('btn-save-msg').addEventListener('click', () => {
   G.msgTxt  = $('msg-txt').value.trim();
   G.msgHora = $('msg-hora').value;
-  saveAll(); renderHoy(); scheduleMsgMotiv();
+  saveAllSync(); renderHoy(); scheduleMsgMotiv();
   const btn = $('btn-save-msg');
   btn.textContent = '✅ ¡Guardado!';
   btn.style.background = 'var(--g)';
@@ -1811,6 +1948,13 @@ scheduleMsgMotiv();
 const n0=now(),man=new Date(n0.getFullYear(),n0.getMonth(),n0.getDate()+1,0,1,0);
 setTimeout(()=>{ scheduleNotifs(); scheduleMsgMotiv(); setInterval(()=>{ scheduleNotifs(); scheduleMsgMotiv(); },86400000); }, man-n0);
 </script>
+
+<!-- SYNC STATUS BAR -->
+<div id="sync-bar" style="display:none;position:fixed;bottom:60px;left:50%;transform:translateX(-50%);z-index:500;">
+  <div id="sync-status" style="font-size:11px;font-weight:800;padding:4px 12px;border-radius:20px;background:#e8f8f5;color:#00B894;white-space:nowrap;">
+    Conectando...
+  </div>
+</div>
 
 <!-- MODAL CHECKLIST -->
 <div class="modal-overlay" id="modal-checklist">
