@@ -1070,7 +1070,155 @@ function actualizarBtnChecklist(dk, tid, total, btnOk) {
 // ══════════════════════════════════════════════════
 // FIREBASE SYNC — Tiempo Real
 // ══════════════════════════════════════════════════
+// ══════════════════════════════════════════════════
+// FIREBASE CONFIG COMPLETO
+// ══════════════════════════════════════════════════
 const FB_URL = 'https://mirutina-816f8-default-rtdb.firebaseio.com';
+const VAPID_KEY = 'BBN8WLMRB-w6YDfyNnem38cvsAW7O8SoxmYUbsvQR8SRto_G4I1-KikQJIco9gpmoAhNcacasKR4vFINafIsFGO';
+const FB_CONFIG = {
+  apiKey: "AIzaSyCV-iteBwYZ3N3Kej2k92OstVWKms8cTec",
+  authDomain: "mirutina-816f8.firebaseapp.com",
+  databaseURL: "https://mirutina-816f8-default-rtdb.firebaseio.com",
+  projectId: "mirutina-816f8",
+  storageBucket: "mirutina-816f8.firebasestorage.app",
+  messagingSenderId: "272685083908",
+  appId: "1:272685083908:web:MBiT1OBumOTOTr1djNy00m"
+};
+
+// ══════════════════════════════════════════════════
+// FIREBASE CLOUD MESSAGING — Notificaciones reales
+// ══════════════════════════════════════════════════
+let fcmToken = null;
+
+async function iniciarFCM() {
+  if (!('serviceWorker' in navigator) || !('Notification' in window)) return;
+  
+  try {
+    // Registrar service worker para FCM
+    const swCode = `
+importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.7.0/firebase-messaging-compat.js');
+
+firebase.initializeApp({
+  apiKey: "AIzaSyCV-iteBwYZ3N3Kej2k92OstVWKms8cTec",
+  authDomain: "mirutina-816f8.firebaseapp.com",
+  databaseURL: "https://mirutina-816f8-default-rtdb.firebaseio.com",
+  projectId: "mirutina-816f8",
+  storageBucket: "mirutina-816f8.firebasestorage.app",
+  messagingSenderId: "272685083908",
+  appId: "1:272685083908:web:MBiT1OBumOTOTr1djNy00m"
+});
+
+const messaging = firebase.messaging();
+
+messaging.onBackgroundMessage(function(payload) {
+  const { title, body, icon } = payload.notification || {};
+  self.registration.showNotification(title || 'Mi Rutina', {
+    body: body || '',
+    icon: icon || '/icon.png',
+    badge: '/icon.png',
+    vibrate: [300, 100, 300],
+    requireInteraction: true,
+    tag: payload.data && payload.data.tag || 'mi-rutina',
+    data: payload.data || {}
+  });
+});
+
+self.addEventListener('notificationclick', function(event) {
+  event.notification.close();
+  event.waitUntil(clients.openWindow('/'));
+});
+`;
+
+    const swBlob = new Blob([swCode], {type: 'text/javascript'});
+    const swUrl = URL.createObjectURL(swBlob);
+    const swReg = await navigator.serviceWorker.register(swUrl, {scope: '/'});
+    
+    // Cargar Firebase SDK
+    await cargarScript('https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js');
+    await cargarScript('https://www.gstatic.com/firebasejs/10.7.0/firebase-messaging-compat.js');
+    
+    if (!firebase.apps.length) firebase.initializeApp(FB_CONFIG);
+    const messaging = firebase.messaging();
+    
+    // Pedir permiso y obtener token
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') return;
+    
+    fcmToken = await messaging.getToken({ 
+      vapidKey: VAPID_KEY,
+      serviceWorkerRegistration: swReg
+    });
+    
+    if (fcmToken) {
+      // Guardar token en Firebase para poder enviar desde admin
+      const rol = G.adminLogado ? 'admin' : 'joven';
+      await fbSet('tokens/' + rol, { token: fcmToken, ts: Date.now() });
+      mostrarEstadoSync('🔔 Notificaciones activadas', '#00B894');
+    }
+    
+    // Notificaciones en primer plano
+    messaging.onMessage((payload) => {
+      const { title, body } = payload.notification || {};
+      mostrarLock(false, { titulo: title, cuerpo: body });
+    });
+    
+  } catch(e) {
+    console.log('FCM error:', e);
+  }
+}
+
+function cargarScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+// Enviar notificación a través de Firebase (admin → joven)
+async function enviarNotifAJoven(titulo, cuerpo) {
+  const tokenData = await fbGet('tokens/joven');
+  if (!tokenData || !tokenData.token) {
+    alert('El joven aún no ha activado las notificaciones en su celular');
+    return false;
+  }
+  // Guardar en Firebase la notificación pendiente (el SW la mostrará)
+  await fbSet('notif-pendiente', {
+    title: titulo,
+    body: cuerpo,
+    ts: Date.now(),
+    mostrada: false
+  });
+  return true;
+}
+
+// Revisar si hay notificaciones pendientes (el joven las recibe)
+async function revisarNotifPendiente() {
+  if (G.adminLogado) return;
+  const notif = await fbGet('notif-pendiente');
+  if (!notif || notif.mostrada) return;
+  if (Date.now() - notif.ts > 60000) return; // ignorar si tiene más de 1 min
+  
+  // Marcar como mostrada
+  await fbUpdate('notif-pendiente', { mostrada: true });
+  
+  // Mostrar notificación
+  if (Notification.permission === 'granted') {
+    new Notification(notif.title || 'Mi Rutina 🚀', {
+      body: notif.body || '',
+      icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>",
+      vibrate: [300, 100, 300],
+      requireInteraction: true,
+      tag: 'mi-rutina-admin'
+    });
+  }
+  // También mostrar en pantalla de bloqueo simulada
+  mostrarLock(false, { titulo: notif.title, cuerpo: notif.body });
+}
 let fbSyncTimer = null;
 let ultimaSync = 0;
 
@@ -1196,6 +1344,10 @@ function saveAllSync() {
 function iniciarPolling() {
   syncBajar(); // primera vez inmediata
   setInterval(syncBajar, 10000);
+  // Revisar notificaciones pendientes del admin cada 15 segundos (joven)
+  if (!G.adminLogado) {
+    setInterval(revisarNotifPendiente, 15000);
+  }
 }
 
 // Iniciar sync al cargar
